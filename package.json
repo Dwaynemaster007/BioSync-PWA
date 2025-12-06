@@ -1,0 +1,28 @@
+{
+  "name": "biosync-pwa",
+  "version": "1.0.0",
+  "description": "Full-Stack Fitness Tracking Platform (Monorepo)",
+  "main": "index.js",
+  "private": true,
+  "scripts": {
+    "start:backend": "cd biosync-backend && python manage.py runserver",
+    "start:web": "cd biosync-web && npm run dev",
+    "start:mobile": "cd biosync-mobile && npm run start",
+    "dev": "concurrently \"npm run start:backend\" \"npm run start:web\"",
+    "install:all": "npm install && cd biosync-backend && pip install -r requirements.txt && cd ../biosync-web && npm install && cd ../biosync-mobile && npm install"
+  },
+  "keywords": [
+    "fitness",
+    "django",
+    "react",
+    "nextjs",
+    "react-native",
+    "pwa",
+    "monorepo"
+  ],
+  "author": "Thubelihle Dlamini (Dwaynemaster007)",
+  "license": "ISC",
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
