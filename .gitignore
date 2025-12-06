@@ -1,3 +1,6 @@
+-------------------------------------------------------------------Global .gitignore for BioSync-PWA MonorepoIncludes ignores for Python, Node, Django, Next.js, and OS files-------------------------------------------------------------------1. Python / Djangopycache/*.pyc*.pyo*~*.logvenv/.env.DS_Storedb.sqlite3/static/media2. Node / JavaScriptnode_modules/.next/dist/build/*.localnpm-debug.logyarn-error.log3. Backend Specific (Docker/Deployment Artifacts)/biosync-backend/.env/biosync-backend/static//biosync-backend/media/4. Frontend Specific/biosync-web/.env.local/biosync-web/.next//biosync-mobile/.env.local/biosync-mobile/.expo//biosync-mobile/android//biosync-mobile/ios/
+
+
 # Logs
 logs
 *.log
