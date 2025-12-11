@@ -1,0 +1,13 @@
+# Django Core
+Django==4.2.11
+psycopg2-binary==2.9.9
+
+# REST Framework and Authentication
+djangorestframework==3.15.1
+django-cors-headers==4.3.1
+djangorestframework-simplejwt==5.3.1
+
+# Utilities
+python-dotenv==1.0.1
+# Pillow is required for the profile_picture field in the User model
+Pillow==10.2.0
