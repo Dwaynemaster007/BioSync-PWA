@@ -1,62 +1,74 @@
-from rest_framework import generics, status
+from rest_framework import generics, status, permissions
 from rest_framework.response import Response
+from rest_framework.authtoken.models import Token
 from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated, AllowAny
-from django.contrib.auth import get_user_model
+from django.contrib.auth import authenticate
+from .serializers import CustomUserSerializer, UserRegistrationSerializer
+from .models import CustomUser
 
-from .serializers import UserSerializer, RegistrationSerializer
-
-User = get_user_model()
-
-class RegistrationView(APIView):
+class UserRegistrationView(generics.CreateAPIView):
     """
-    API view for user registration.
-    POST: Creates a new User instance.
+    Registers a new user and automatically generates and returns an authentication token.
     """
-    permission_classes = [AllowAny]
-    serializer_class = RegistrationSerializer
+    queryset = CustomUser.objects.all()
+    serializer_class = UserRegistrationSerializer
+    permission_classes = [permissions.AllowAny]
 
-    def post(self, request):
-        serializer = self.serializer_class(data=request.data)
-        
-        # Validate data against RegistrationSerializer
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
-        # Save the new user (handling password hashing inside the serializer's create method)
         user = serializer.save()
+        
+        # Generate token for the newly registered user
+        token, created = Token.objects.get_or_create(user=user)
+        
+        headers = self.get_success_headers(serializer.data)
+        return Response({
+            'user': CustomUserSerializer(user).data,
+            'token': token.key
+        }, status=status.HTTP_201_CREATED, headers=headers)
 
-        # You might choose to return the created user data, 
-        # but often for security, a success message is sufficient, 
-        # and the user must then call the /auth/token endpoint to log in.
-        return Response(
-            {"detail": "User registered successfully. You can now log in.", "email": user.email},
-            status=status.HTTP_201_CREATED
-        )
-
-
-class ProfileView(generics.RetrieveUpdateAPIView):
+class UserLoginView(APIView):
     """
-    API view for retrieving and updating the authenticated user's profile.
-    GET /api/v1/users/me/ : Retrieve current user profile
-    PUT/PATCH /api/v1/users/me/ : Update current user profile
+    Authenticates a user via email/username and password, and returns the authentication token.
     """
-    serializer_class = UserSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        username = request.data.get('username')
+        email = request.data.get('email') # Allow login via email or username
+        password = request.data.get('password')
+
+        user = None
+        if email:
+            try:
+                # Attempt to retrieve user by email
+                user = CustomUser.objects.get(email__iexact=email)
+            except CustomUser.DoesNotExist:
+                pass # Continue to check by username if not found by email
+
+        # If not found by email, or if username was provided directly
+        if not user and username:
+            user = CustomUser.objects.filter(username__iexact=username).first()
+
+        if user and user.check_password(password):
+            # Authentication successful
+            Token.objects.filter(user=user).delete() # Invalidate old token
+            token, created = Token.objects.get_or_create(user=user)
+            return Response({
+                'user': CustomUserSerializer(user).data,
+                'token': token.key
+            })
+        
+        # Authentication failed
+        return Response({'error': 'Invalid credentials'}, status=status.HTTP_400_BAD_REQUEST)
+
+class UserProfileView(generics.RetrieveUpdateAPIView):
+    """
+    View to retrieve and update the authenticated user's profile.
+    """
+    serializer_class = CustomUserSerializer
+    permission_classes = [permissions.IsAuthenticated]
 
     def get_object(self):
-        """
-        Overridden to return the currently authenticated user instance.
-        """
         return self.request.user
-
-    def update(self, request, *args, **kwargs):
-        # We use the get_object logic to ensure we only update the current user
-        instance = self.get_object()
-        
-        # Use partial=True for PATCH requests
-        partial = kwargs.pop('partial', False)
-        serializer = self.get_serializer(instance, data=request.data, partial=partial)
-        serializer.is_valid(raise_exception=True)
-        self.perform_update(serializer)
-
-        return Response(serializer.data, status=status.HTTP_200_OK)
