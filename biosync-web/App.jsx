@@ -1,29 +1,46 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { Plus, CheckCircle, Target, Loader, TrendingUp, XCircle, Trash2, Zap } from 'lucide-react';
+import { Plus, CheckCircle, Target, Loader, TrendingUp, XCircle, Trash2, Zap, User, LogOut } from 'lucide-react';
 
 // --- Configuration and API Utility ---
-const API_BASE_URL = 'http://localhost:8000/api/v1'; // Assumes Django runs on localhost:8000
-const MOCK_TOKEN = 'mock-auth-token'; // Replace with actual token handling (e.g., from local storage or context)
-const headers = {
-  'Content-Type': 'application/json',
-  // NOTE: For a real DRF app, you'd need the Authorization header:
-  // 'Authorization': `Token ${MOCK_TOKEN}` 
-  // We omit it for simplicity in this frontend only file, but the structure is ready.
-};
+const API_BASE_URL = 'http://localhost:8000/api/v1'; 
 
 /**
- * Utility for API interaction (fetch wrapper with basic error handling)
+ * Utility for API interaction (fetch wrapper with authentication handling)
  * @param {string} endpoint - The API path (e.g., goals)
  * @param {object} options - Fetch options (method, body, headers)
+ * @param {string | null} authToken - The JWT or Token to include in the header
  */
-const apiFetch = async (endpoint, options = {}) => {
+const apiFetch = async (endpoint, options = {}, authToken = null) => {
   const url = `${API_BASE_URL}/${endpoint}`;
+  
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(authToken && { 'Authorization': `Token ${authToken}` }), // Include token if available
+    ...(options.headers || {})
+  };
+
   try {
     const response = await fetch(url, { ...options, headers: headers });
+    
+    // Handle 401 Unauthorized globally
+    if (response.status === 401) {
+        // This should be handled by the component that called apiFetch (e.g., forcing logout)
+        const errorData = await response.json().catch(() => ({ detail: 'Unauthorized' }));
+        throw new Error(errorData.detail || 'Unauthorized');
+    }
+    
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({ detail: 'Unknown API error' }));
-      throw new Error(errorData.detail || `Request failed with status ${response.status}`);
+      // Attempt to extract a meaningful error message from Django/DRF response
+      const errorMessage = errorData.detail 
+                         || (errorData.title && errorData.title[0]) 
+                         || (errorData.username && errorData.username[0])
+                         || (errorData.email && errorData.email[0])
+                         || `Request failed with status ${response.status}`;
+                         
+      throw new Error(errorMessage);
     }
+    
     // Handle 204 No Content
     if (response.status === 204) {
       return null;
@@ -35,39 +52,45 @@ const apiFetch = async (endpoint, options = {}) => {
   }
 };
 
-const goalApi = {
-  fetchGoals: () => apiFetch('goals/'),
+
+// --- Goal API Helpers (Requiring Auth Token) ---
+
+const createGoalApi = (authToken) => ({
+  fetchGoals: () => apiFetch('goals/', {}, authToken),
   createGoal: (data) => apiFetch('goals/', {
     method: 'POST',
     body: JSON.stringify(data),
-  }),
+  }, authToken),
   updateGoal: (id, data) => apiFetch(`goals/${id}/`, {
-    method: 'PUT',
+    method: 'PUT', // Assuming PUT for full replacement as per previous comment
     body: JSON.stringify(data),
-  }),
+  }, authToken),
   deleteGoal: (id) => apiFetch(`goals/${id}/`, {
     method: 'DELETE',
-  }),
+  }, authToken),
+});
+
+// --- Auth API Helpers (No Auth Token Required for these) ---
+
+const authApi = {
+    login: (credentials) => apiFetch('users/login/', {
+        method: 'POST',
+        body: JSON.stringify(credentials)
+    }),
+    register: (data) => apiFetch('users/register/', {
+        method: 'POST',
+        body: JSON.stringify(data)
+    }),
 };
-// --- End API Utility ---
 
+// --- Helper Components (Same as before, adapted slightly) ---
 
-// --- Components (GoalCard, ProgressBar, NewGoalForm - same as before, but linked to new handlers) ---
-
-/**
- * Utility function to generate a unique ID (kept for new local goals)
- */
-const generateId = () => Math.random().toString(36).substring(2, 9);
-
-/**
- * Progress Bar Component
- */
 const ProgressBar = ({ current, target, status }) => {
   const percentage = Math.min(100, (current / target) * 100);
   let color = 'bg-indigo-500';
   let indicator = 'bg-indigo-700';
 
-  if (status === 'COMPLETED') { // Changed status keys to match Django model (uppercase)
+  if (status === 'COMPLETED') {
     color = 'bg-green-500';
     indicator = 'bg-green-700';
   } else if (status === 'STUCK') {
@@ -88,11 +111,8 @@ const ProgressBar = ({ current, target, status }) => {
   );
 };
 
-/**
- * Goal Card Component
- */
 const GoalCard = ({ goal, onUpdateProgress, onDelete, isUpdating }) => {
-  const { id, title, target_value: target, target_unit: unit, current_value: current = 0, status, goal_type: type } = goal; // Mapped keys to Django model field names
+  const { id, title, target_value: target, target_unit: unit, current_value: current = 0, status, goal_type: type } = goal;
   const percentage = Math.round(Math.min(100, (current / target) * 100));
 
   const statusMap = {
@@ -102,16 +122,18 @@ const GoalCard = ({ goal, onUpdateProgress, onDelete, isUpdating }) => {
     'NOT_STARTED': { icon: Zap, text: 'Not Started', color: 'text-gray-600 bg-gray-100' },
   };
 
-  const currentStatus = status || 'NOT_STARTED'; // Default to NOT_STARTED if status is null/undefined
+  const currentStatus = status || 'NOT_STARTED';
   const StatusIcon = statusMap[currentStatus]?.icon || Zap;
 
   const handleProgressChange = (increment) => {
-    let newCurrent = current + increment;
+    let newCurrent = parseFloat(current) + increment; // Parse float for decimal fields
     if (newCurrent < 0) newCurrent = 0;
+    
+    // Ensure newCurrent doesn't exceed target
+    newCurrent = Math.min(newCurrent, parseFloat(target));
 
     let newStatus = currentStatus;
     if (newCurrent >= target) {
-      newCurrent = target;
       newStatus = 'COMPLETED';
     } else if (newCurrent > 0) {
       newStatus = 'IN_PROGRESS';
@@ -119,14 +141,13 @@ const GoalCard = ({ goal, onUpdateProgress, onDelete, isUpdating }) => {
       newStatus = 'NOT_STARTED';
     }
 
-    // Call the parent handler which now calls the API
-    onUpdateProgress(id, newCurrent, newStatus);
+    onUpdateProgress(id, newCurrent.toFixed(2), newStatus); // Send back as string/fixed decimal
   };
 
   const disabled = isUpdating === id;
 
   return (
-    <div className="bg-white p-6 rounded-xl shadow-lg hover:shadow-xl transition-shadow duration-300 border border-gray-100 flex flex-col justify-between">
+    <div className="bg-white p-6 rounded-xl shadow-lg hover:shadow-xl transition-shadow duration-300 border border-gray-100 flex flex-col justify-between relative">
       {disabled && (
         <div className="absolute inset-0 bg-white bg-opacity-80 flex items-center justify-center z-10 rounded-xl">
           <Loader className="w-6 h-6 animate-spin text-indigo-600" />
@@ -144,7 +165,7 @@ const GoalCard = ({ goal, onUpdateProgress, onDelete, isUpdating }) => {
       <div>
         <div className="flex justify-between items-end mb-1">
           <span className="text-2xl font-extrabold text-gray-900">
-            {current} <span className="text-base font-medium text-gray-500">/{target} {unit}</span>
+            {parseFloat(current).toFixed(2)} <span className="text-base font-medium text-gray-500">/{parseFloat(target).toFixed(2)} {unit}</span>
           </span>
           <span className="text-lg font-bold text-gray-700">{percentage}%</span>
         </div>
@@ -180,9 +201,6 @@ const GoalCard = ({ goal, onUpdateProgress, onDelete, isUpdating }) => {
   );
 };
 
-/**
- * New Goal Form Component
- */
 const NewGoalForm = ({ onAddGoal, onClose }) => {
   const [title, setTitle] = useState('');
   const [target, setTarget] = useState('');
@@ -201,15 +219,14 @@ const NewGoalForm = ({ onAddGoal, onClose }) => {
 
     const newGoalData = {
       title: title.trim(),
-      target_value: Number(target),
+      target_value: Number(target).toFixed(2),
       target_unit: unit.trim(),
       goal_type: type,
-      // Default values required by the Django model
       description: `New goal: ${title}`,
-      start_date: new Date().toISOString().split('T')[0], // YYYY-MM-DD format
-      target_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 30 days from now
+      start_date: new Date().toISOString().split('T')[0],
+      target_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
       status: 'NOT_STARTED',
-      current_value: 0, // This is a new field we assume the backend model now supports
+      current_value: 0,
     };
 
     setIsLoading(true);
@@ -248,9 +265,10 @@ const NewGoalForm = ({ onAddGoal, onClose }) => {
             <input
               id="target"
               type="number"
+              step="0.01"
               value={target}
               onChange={(e) => setTarget(e.target.value)}
-              placeholder="e.g., 10"
+              placeholder="e.g., 10.00"
               min="1"
               className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
               required
@@ -312,35 +330,281 @@ const NewGoalForm = ({ onAddGoal, onClose }) => {
 };
 
 
+// --- Authentication Components ---
+
+const AuthForm = ({ title, submitLabel, fields, onSubmit, toggleMode, toggleLabel, isLoading, error }) => (
+    <div className="max-w-md w-full p-8 bg-white rounded-xl shadow-2xl border border-indigo-200">
+        <h2 className="text-3xl font-extrabold text-center text-indigo-700 mb-6">{title}</h2>
+        
+        {error && (
+            <div className="mb-4 p-3 bg-red-100 border border-red-300 text-red-700 rounded-lg text-sm font-medium flex items-center">
+                <XCircle className="w-4 h-4 mr-2" />
+                {error}
+            </div>
+        )}
+
+        <form onSubmit={onSubmit} className="space-y-4">
+            {fields.map(field => (
+                <div key={field.name}>
+                    <label htmlFor={field.name} className="block text-sm font-medium text-gray-700">
+                        {field.label}
+                    </label>
+                    <input
+                        id={field.name}
+                        name={field.name}
+                        type={field.type}
+                        value={field.value}
+                        onChange={field.onChange}
+                        placeholder={field.placeholder}
+                        required={field.required}
+                        className="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+                        disabled={isLoading}
+                    />
+                </div>
+            ))}
+            <button
+                type="submit"
+                className="w-full mt-6 py-2 px-4 border border-transparent rounded-lg shadow-sm text-lg font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors flex items-center justify-center"
+                disabled={isLoading}
+            >
+                {isLoading && <Loader className="w-5 h-5 animate-spin mr-2" />}
+                {submitLabel}
+            </button>
+        </form>
+        <div className="mt-6 text-center">
+            <button
+                type="button"
+                onClick={toggleMode}
+                className="text-sm font-medium text-indigo-600 hover:text-indigo-500 transition-colors"
+            >
+                {toggleLabel}
+            </button>
+        </div>
+    </div>
+);
+
+
+const LoginForm = ({ onLoginSuccess, toggleMode }) => {
+    const [username, setUsername] = useState('');
+    const [password, setPassword] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setIsLoading(true);
+        setError(null);
+        try {
+            // Note: Django login API accepts either 'username' or 'email'
+            const data = await authApi.login({ username: username, password: password });
+            onLoginSuccess(data.token, data.user);
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const fields = [
+        { name: 'username', label: 'Username or Email', type: 'text', value: username, onChange: (e) => setUsername(e.target.value), required: true, placeholder: 'john.doe or john@example.com' },
+        { name: 'password', label: 'Password', type: 'password', value: password, onChange: (e) => setPassword(e.target.value), required: true, placeholder: '••••••••' },
+    ];
+
+    return (
+        <AuthForm
+            title="Welcome Back"
+            submitLabel="Sign In"
+            fields={fields}
+            onSubmit={handleSubmit}
+            toggleMode={toggleMode}
+            toggleLabel="Need an account? Register here."
+            isLoading={isLoading}
+            error={error}
+        />
+    );
+};
+
+const RegistrationForm = ({ onRegisterSuccess, toggleMode }) => {
+    const [email, setEmail] = useState('');
+    const [username, setUsername] = useState('');
+    const [password, setPassword] = useState('');
+    const [password2, setPassword2] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        if (password !== password2) {
+            setError("Passwords do not match.");
+            return;
+        }
+
+        setIsLoading(true);
+        setError(null);
+        try {
+            const data = await authApi.register({ email, username, password, password2 });
+            onRegisterSuccess(data.token, data.user);
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const fields = [
+        { name: 'email', label: 'Email Address', type: 'email', value: email, onChange: (e) => setEmail(e.target.value), required: true, placeholder: 'you@example.com' },
+        { name: 'username', label: 'Username', type: 'text', value: username, onChange: (e) => setUsername(e.target.value), required: true, placeholder: 'john_doe' },
+        { name: 'password', label: 'Password', type: 'password', value: password, onChange: (e) => setPassword(e.target.value), required: true, placeholder: '••••••••' },
+        { name: 'password2', label: 'Confirm Password', type: 'password', value: password2, onChange: (e) => setPassword2(e.target.value), required: true, placeholder: '••••••••' },
+    ];
+
+    return (
+        <AuthForm
+            title="Join BioSync"
+            submitLabel="Register Account"
+            fields={fields}
+            onSubmit={handleSubmit}
+            toggleMode={toggleMode}
+            toggleLabel="Already have an account? Sign in."
+            isLoading={isLoading}
+            error={error}
+        />
+    );
+};
+
+
 // --- Main Application Component ---
 
 const App = () => {
+  // Authentication State
+  const [authToken, setAuthToken] = useState(localStorage.getItem('authToken'));
+  const [currentUser, setCurrentUser] = useState(
+    JSON.parse(localStorage.getItem('currentUser') || 'null')
+  );
+  const [authMode, setAuthMode] = useState('login'); // 'login' or 'register'
+
+  // Application State
   const [goals, setGoals] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isFormVisible, setIsFormVisible] = useState(false);
-  const [error, setError] = useState(null);
-  const [isUpdating, setIsUpdating] = useState(null); // Tracks the ID of the goal currently being updated
+  const [appError, setAppError] = useState(null); // General application errors
+  const [isUpdating, setIsUpdating] = useState(null); 
+  
+  // Create goal API helpers based on current token
+  const goalApi = useMemo(() => createGoalApi(authToken), [authToken]);
 
+  // --- Auth Handlers ---
+  const handleLoginSuccess = useCallback((token, user) => {
+    localStorage.setItem('authToken', token);
+    localStorage.setItem('currentUser', JSON.stringify(user));
+    setAuthToken(token);
+    setCurrentUser(user);
+    setAppError(null);
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    localStorage.removeItem('authToken');
+    localStorage.removeItem('currentUser');
+    setAuthToken(null);
+    setCurrentUser(null);
+    setGoals([]);
+    setAppError(null);
+    setAuthMode('login'); // Redirect to login after logout
+  }, []);
+
+
+  // --- Goal Fetching and CRUD Logic (Only runs if authenticated) ---
   const fetchGoals = useCallback(async () => {
+    if (!authToken) return;
+
     setIsLoading(true);
-    setError(null);
+    setAppError(null);
     try {
       const data = await goalApi.fetchGoals();
-      setGoals(data || []); // API response is expected to be an array of goals
+      setGoals(data || []);
     } catch (err) {
-      setError(`Failed to fetch goals: ${err.message}`);
+      if (err.message.includes('Unauthorized')) {
+        handleLogout(); // Auto-logout on unauthorized API access
+      } else {
+        setAppError(`Failed to fetch goals: ${err.message}`);
+      }
       setGoals([]);
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [authToken, goalApi, handleLogout]);
 
   useEffect(() => {
-    // Initial data fetch
-    fetchGoals();
-  }, [fetchGoals]);
+    // Initial data fetch upon successful authentication
+    if (authToken) {
+      fetchGoals();
+    }
+  }, [authToken, fetchGoals]);
 
 
+  const handleAddGoal = async (newGoalData) => {
+    try {
+      const createdGoal = await goalApi.createGoal(newGoalData);
+      setGoals(prevGoals => [createdGoal, ...prevGoals]);
+      return createdGoal;
+    } catch (err) {
+      setAppError(`Failed to add goal: ${err.message}`);
+      throw err;
+    }
+  };
+
+  const handleUpdateProgress = async (id, newCurrent, newStatus) => {
+    setIsUpdating(id);
+    setAppError(null);
+    try {
+      const existingGoal = goals.find(g => g.id === id);
+      
+      if (!existingGoal) throw new Error("Goal not found locally.");
+      
+      const updateData = {
+        ...existingGoal,
+        current_value: newCurrent,
+        status: newStatus,
+      };
+      
+      // Remove read-only fields that Django might reject in a PUT request
+      delete updateData.id;
+      delete updateData.user;
+      delete updateData.created_at;
+      delete updateData.updated_at;
+      delete updateData.progress_percentage;
+
+      const updatedGoal = await goalApi.updateGoal(id, updateData);
+      
+      setGoals(prevGoals =>
+        prevGoals.map(goal =>
+          goal.id === id ? updatedGoal : goal
+        )
+      );
+    } catch (err) {
+      setAppError(`Failed to update progress for goal ${id}: ${err.message}`);
+      // Re-fetch to revert local changes if API fails (good practice)
+      fetchGoals();
+    } finally {
+      setIsUpdating(null);
+    }
+  };
+
+  const handleDeleteGoal = async (id) => {
+    if (window.confirm("Are you sure you want to delete this goal?")) {
+        setIsUpdating(id);
+        setAppError(null);
+        try {
+            await goalApi.deleteGoal(id);
+            setGoals(prevGoals => prevGoals.filter(goal => goal.id !== id));
+        } catch (err) {
+            setAppError(`Failed to delete goal: ${err.message}`);
+        } finally {
+            setIsUpdating(null);
+        }
+    }
+  }
+  
   // --- Statistics ---
   const stats = useMemo(() => {
     const totalGoals = goals.length;
@@ -348,8 +612,8 @@ const App = () => {
     const stuckGoals = goals.filter(g => g.status === 'STUCK').length;
 
     const overallProgress = goals.reduce((acc, goal) => {
-      const current = goal.current_value || 0;
-      const target = goal.target_value || 1;
+      const current = parseFloat(goal.current_value) || 0;
+      const target = parseFloat(goal.target_value) || 1;
       const percentage = Math.min(100, (current / target) * 100);
       return acc + percentage;
     }, 0) / (totalGoals || 1);
@@ -362,63 +626,6 @@ const App = () => {
     };
   }, [goals]);
 
-
-  // --- Handlers ---
-  const handleAddGoal = async (newGoalData) => {
-    try {
-      const createdGoal = await goalApi.createGoal(newGoalData);
-      setGoals(prevGoals => [createdGoal, ...prevGoals]);
-      return createdGoal;
-    } catch (err) {
-      setError(`Failed to add goal: ${err.message}`);
-      throw err;
-    }
-  };
-
-  const handleUpdateProgress = async (id, newCurrent, newStatus) => {
-    setIsUpdating(id);
-    setError(null);
-    try {
-      const updateData = {
-        current_value: newCurrent,
-        status: newStatus,
-        // The PUT endpoint usually requires all required fields, we send back the rest of the existing goal data
-        // For a PATCH endpoint, we would only send current_value and status. We assume PUT is required here.
-        ...goals.find(g => g.id === id)
-      };
-      
-      const updatedGoal = await goalApi.updateGoal(id, updateData);
-      
-      // Update local state with the confirmed data from the server
-      setGoals(prevGoals =>
-        prevGoals.map(goal =>
-          goal.id === id ? updatedGoal : goal
-        )
-      );
-    } catch (err) {
-      setError(`Failed to update progress for goal ${id}: ${err.message}`);
-      // Re-fetch to revert local changes if API fails
-      fetchGoals();
-    } finally {
-      setIsUpdating(null);
-    }
-  };
-
-  const handleDeleteGoal = async (id) => {
-    if (window.confirm("Are you sure you want to delete this goal?")) {
-        setIsUpdating(id);
-        setError(null);
-        try {
-            await goalApi.deleteGoal(id);
-            setGoals(prevGoals => prevGoals.filter(goal => goal.id !== id));
-        } catch (err) {
-            setError(`Failed to delete goal: ${err.message}`);
-        } finally {
-            setIsUpdating(null);
-        }
-    }
-  }
-
   // Helper for rendering stat cards
   const StatCard = ({ title, value, icon: Icon, color }) => (
     <div className={`p-5 rounded-xl shadow-md ${color} text-white flex items-center justify-between transition-transform duration-300 hover:scale-[1.02]`}>
@@ -429,7 +636,24 @@ const App = () => {
       <Icon className="w-8 h-8 opacity-70" />
     </div>
   );
+  
+  // --- Render Auth vs. Dashboard ---
+  if (!authToken) {
+    return (
+        <div className="min-h-screen bg-gray-50 font-sans flex items-center justify-center p-4">
+            <script src="https://cdn.tailwindcss.com"></script>
+            <title>BioSync - Authentication</title>
+            {authMode === 'login' ? (
+                <LoginForm onLoginSuccess={handleLoginSuccess} toggleMode={() => setAuthMode('register')} />
+            ) : (
+                <RegistrationForm onRegisterSuccess={handleLoginSuccess} toggleMode={() => setAuthMode('login')} />
+            )}
+        </div>
+    );
+  }
 
+
+  // --- Dashboard View ---
   return (
     <div className="min-h-screen bg-gray-50 font-sans">
       <script src="https://cdn.tailwindcss.com"></script>
@@ -453,23 +677,36 @@ const App = () => {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
           <h1 className="text-3xl font-extrabold text-indigo-700 flex items-center">
             <TrendingUp className="w-8 h-8 mr-2" />
-            BioSync Progress Tracker
+            BioSync Tracker
           </h1>
-          <button
-            onClick={() => setIsFormVisible(true)}
-            className="px-4 py-2 bg-indigo-600 text-white font-semibold rounded-lg shadow-lg hover:bg-indigo-700 transition-colors flex items-center space-x-1"
-          >
-            <Plus className="w-5 h-5" />
-            <span className="hidden sm:inline">Add New Goal</span>
-          </button>
+          <div className="flex items-center space-x-4">
+             <div className="hidden sm:flex items-center text-sm font-medium text-gray-700">
+                <User className="w-5 h-5 mr-1 text-indigo-500" />
+                <span>{currentUser?.username || currentUser?.email || 'User'}</span>
+            </div>
+            <button
+                onClick={() => setIsFormVisible(true)}
+                className="px-4 py-2 bg-indigo-600 text-white font-semibold rounded-lg shadow-lg hover:bg-indigo-700 transition-colors flex items-center space-x-1"
+            >
+                <Plus className="w-5 h-5" />
+                <span className="hidden sm:inline">Add Goal</span>
+            </button>
+            <button
+                onClick={handleLogout}
+                className="p-2 bg-red-100 text-red-600 rounded-full hover:bg-red-200 transition-colors"
+                aria-label="Logout"
+            >
+                <LogOut className="w-5 h-5" />
+            </button>
+          </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {error && (
+        {appError && (
             <div className="mb-6 p-4 bg-red-100 border border-red-300 text-red-700 rounded-xl font-medium flex items-center">
                 <XCircle className="w-5 h-5 mr-2" />
-                {error}
+                {appError}
             </div>
         )}
         
@@ -510,11 +747,11 @@ const App = () => {
           {isLoading && goals.length === 0 ? (
             <div className="flex items-center justify-center p-12 bg-white rounded-xl shadow-inner">
                 <Loader className="w-6 h-6 animate-spin text-indigo-600 mr-3" />
-                <span className="text-lg text-gray-600">Loading goals from API...</span>
+                <span className="text-lg text-gray-600">Loading goals...</span>
             </div>
           ) : goals.length === 0 ? (
             <div className="text-center p-12 bg-white rounded-xl shadow-inner border border-dashed border-gray-300">
-              <p className="text-gray-500 text-lg">You have no active goals. Click "Add New Goal" to start tracking!</p>
+              <p className="text-gray-500 text-lg">You have no active goals. Click "Add Goal" to start tracking!</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
