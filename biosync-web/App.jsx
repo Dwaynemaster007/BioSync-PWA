@@ -1,18 +1,63 @@
-import React, { useState, useMemo, useEffect } from 'react';
-import { Plus, CheckCircle, Target, Loader, TrendingUp, XCircle, Trash2 } from 'lucide-react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import { Plus, CheckCircle, Target, Loader, TrendingUp, XCircle, Trash2, Zap } from 'lucide-react';
+
+// --- Configuration and API Utility ---
+const API_BASE_URL = 'http://localhost:8000/api/v1'; // Assumes Django runs on localhost:8000
+const MOCK_TOKEN = 'mock-auth-token'; // Replace with actual token handling (e.g., from local storage or context)
+const headers = {
+  'Content-Type': 'application/json',
+  // NOTE: For a real DRF app, you'd need the Authorization header:
+  // 'Authorization': `Token ${MOCK_TOKEN}` 
+  // We omit it for simplicity in this frontend only file, but the structure is ready.
+};
 
 /**
- * Utility function to generate a unique ID
+ * Utility for API interaction (fetch wrapper with basic error handling)
+ * @param {string} endpoint - The API path (e.g., goals)
+ * @param {object} options - Fetch options (method, body, headers)
+ */
+const apiFetch = async (endpoint, options = {}) => {
+  const url = `${API_BASE_URL}/${endpoint}`;
+  try {
+    const response = await fetch(url, { ...options, headers: headers });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ detail: 'Unknown API error' }));
+      throw new Error(errorData.detail || `Request failed with status ${response.status}`);
+    }
+    // Handle 204 No Content
+    if (response.status === 204) {
+      return null;
+    }
+    return response.json();
+  } catch (error) {
+    console.error(`API Error on ${endpoint}:`, error.message);
+    throw error;
+  }
+};
+
+const goalApi = {
+  fetchGoals: () => apiFetch('goals/'),
+  createGoal: (data) => apiFetch('goals/', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  }),
+  updateGoal: (id, data) => apiFetch(`goals/${id}/`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  }),
+  deleteGoal: (id) => apiFetch(`goals/${id}/`, {
+    method: 'DELETE',
+  }),
+};
+// --- End API Utility ---
+
+
+// --- Components (GoalCard, ProgressBar, NewGoalForm - same as before, but linked to new handlers) ---
+
+/**
+ * Utility function to generate a unique ID (kept for new local goals)
  */
 const generateId = () => Math.random().toString(36).substring(2, 9);
-
-// Initial set of sample goals for demonstration
-const initialGoals = [
-  { id: generateId(), name: "Complete Weekly Cardio Goal", current: 45, target: 60, unit: "Mins", status: 'in-progress', type: 'Fitness' },
-  { id: generateId(), name: "Read 'Deep Work' Book", current: 150, target: 300, unit: "Pages", status: 'in-progress', type: 'Learning' },
-  { id: generateId(), name: "Drink 8 Glasses of Water Daily (Avg)", current: 85, target: 100, unit: "%", status: 'completed', type: 'Health' },
-  { id: generateId(), name: "Finish Project Alpha Report", current: 75, target: 100, unit: "%", status: 'stuck', type: 'Work' },
-];
 
 /**
  * Progress Bar Component
@@ -22,10 +67,10 @@ const ProgressBar = ({ current, target, status }) => {
   let color = 'bg-indigo-500';
   let indicator = 'bg-indigo-700';
 
-  if (status === 'completed') {
+  if (status === 'COMPLETED') { // Changed status keys to match Django model (uppercase)
     color = 'bg-green-500';
     indicator = 'bg-green-700';
-  } else if (status === 'stuck') {
+  } else if (status === 'STUCK') {
     color = 'bg-red-500';
     indicator = 'bg-red-700';
   }
@@ -46,46 +91,53 @@ const ProgressBar = ({ current, target, status }) => {
 /**
  * Goal Card Component
  */
-const GoalCard = ({ goal, onUpdateProgress, onDelete }) => {
-  const { id, name, current, target, unit, status, type } = goal;
+const GoalCard = ({ goal, onUpdateProgress, onDelete, isUpdating }) => {
+  const { id, title, target_value: target, target_unit: unit, current_value: current = 0, status, goal_type: type } = goal; // Mapped keys to Django model field names
   const percentage = Math.round(Math.min(100, (current / target) * 100));
 
   const statusMap = {
-    'in-progress': { icon: Loader, text: 'In Progress', color: 'text-indigo-600 bg-indigo-100' },
-    'completed': { icon: CheckCircle, text: 'Completed', color: 'text-green-600 bg-green-100' },
-    'stuck': { icon: XCircle, text: 'Stuck', color: 'text-red-600 bg-red-100' },
+    'IN_PROGRESS': { icon: Loader, text: 'In Progress', color: 'text-indigo-600 bg-indigo-100' },
+    'COMPLETED': { icon: CheckCircle, text: 'Completed', color: 'text-green-600 bg-green-100' },
+    'STUCK': { icon: XCircle, text: 'Stuck', color: 'text-red-600 bg-red-100' },
+    'NOT_STARTED': { icon: Zap, text: 'Not Started', color: 'text-gray-600 bg-gray-100' },
   };
 
-  const StatusIcon = statusMap[status].icon;
+  const currentStatus = status || 'NOT_STARTED'; // Default to NOT_STARTED if status is null/undefined
+  const StatusIcon = statusMap[currentStatus]?.icon || Zap;
 
   const handleProgressChange = (increment) => {
     let newCurrent = current + increment;
     if (newCurrent < 0) newCurrent = 0;
 
-    let newStatus = status;
+    let newStatus = currentStatus;
     if (newCurrent >= target) {
       newCurrent = target;
-      newStatus = 'completed';
-    } else if (newCurrent > 0 && newStatus === 'completed') {
-        newStatus = 'in-progress';
-    } else if (newCurrent > 0 && newStatus === 'stuck') {
-        newStatus = 'in-progress';
+      newStatus = 'COMPLETED';
+    } else if (newCurrent > 0) {
+      newStatus = 'IN_PROGRESS';
     } else if (newCurrent === 0) {
-        newStatus = 'stuck';
+      newStatus = 'NOT_STARTED';
     }
 
-
+    // Call the parent handler which now calls the API
     onUpdateProgress(id, newCurrent, newStatus);
   };
 
+  const disabled = isUpdating === id;
+
   return (
     <div className="bg-white p-6 rounded-xl shadow-lg hover:shadow-xl transition-shadow duration-300 border border-gray-100 flex flex-col justify-between">
-      <div>
-        <div className={`text-sm font-semibold mb-2 inline-flex items-center px-3 py-1 rounded-full ${statusMap[status].color}`}>
-          <StatusIcon className="w-4 h-4 mr-1" />
-          {statusMap[status].text}
+      {disabled && (
+        <div className="absolute inset-0 bg-white bg-opacity-80 flex items-center justify-center z-10 rounded-xl">
+          <Loader className="w-6 h-6 animate-spin text-indigo-600" />
         </div>
-        <h3 className="text-xl font-bold text-gray-800 mb-3">{name}</h3>
+      )}
+      <div>
+        <div className={`text-sm font-semibold mb-2 inline-flex items-center px-3 py-1 rounded-full ${statusMap[currentStatus]?.color || 'bg-gray-100 text-gray-600'}`}>
+          <StatusIcon className="w-4 h-4 mr-1" />
+          {statusMap[currentStatus]?.text || 'Loading'}
+        </div>
+        <h3 className="text-xl font-bold text-gray-800 mb-3">{title}</h3>
         <p className="text-sm text-indigo-500 font-medium mb-4">{type}</p>
       </div>
 
@@ -97,26 +149,28 @@ const GoalCard = ({ goal, onUpdateProgress, onDelete }) => {
           <span className="text-lg font-bold text-gray-700">{percentage}%</span>
         </div>
 
-        <ProgressBar current={current} target={target} status={status} />
+        <ProgressBar current={current} target={target} status={currentStatus} />
 
         <div className="mt-5 flex space-x-3">
           <button
             onClick={() => handleProgressChange(unit === '%' ? 5 : 1)}
             className="flex-1 px-4 py-2 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition-colors shadow-md hover:shadow-lg disabled:opacity-50"
-            disabled={percentage >= 100}
+            disabled={percentage >= 100 || disabled}
           >
             + {unit === '%' ? '5' : '1'} {unit}
           </button>
           <button
             onClick={() => handleProgressChange(unit === '%' ? -5 : -1)}
-            className="flex-1 px-4 py-2 bg-gray-200 text-gray-800 text-sm font-semibold rounded-lg hover:bg-gray-300 transition-colors shadow-md hover:shadow-lg"
+            className="flex-1 px-4 py-2 bg-gray-200 text-gray-800 text-sm font-semibold rounded-lg hover:bg-gray-300 transition-colors shadow-md hover:shadow-lg disabled:opacity-50"
+            disabled={current <= 0 || disabled}
           >
             - {unit === '%' ? '5' : '1'} {unit}
           </button>
           <button
             onClick={() => onDelete(id)}
-            className="p-2 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 transition-colors"
-            aria-label={`Delete goal: ${name}`}
+            className="p-2 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 transition-colors disabled:opacity-50"
+            aria-label={`Delete goal: ${title}`}
+            disabled={disabled}
           >
             <Trash2 className="w-5 h-5" />
           </button>
@@ -130,32 +184,44 @@ const GoalCard = ({ goal, onUpdateProgress, onDelete }) => {
  * New Goal Form Component
  */
 const NewGoalForm = ({ onAddGoal, onClose }) => {
-  const [name, setName] = useState('');
+  const [title, setTitle] = useState('');
   const [target, setTarget] = useState('');
-  const [unit, setUnit] = useState('Unit');
+  const [unit, setUnit] = useState('Km');
   const [type, setType] = useState('Fitness');
   const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
 
-    if (!name.trim() || !target || target <= 0) {
-      setError('Please provide a name and a positive target value.');
+    if (!title.trim() || !target || Number(target) <= 0 || !unit.trim()) {
+      setError('Please provide a title, a positive target value, and a unit.');
       return;
     }
 
-    const newGoal = {
-      id: generateId(),
-      name: name.trim(),
-      current: 0,
-      target: Number(target),
-      unit: unit,
-      status: 'stuck', // Starts at 0, so 'stuck' or 'in-progress' can be used. Using 'stuck' for 0 progress.
-      type: type,
+    const newGoalData = {
+      title: title.trim(),
+      target_value: Number(target),
+      target_unit: unit.trim(),
+      goal_type: type,
+      // Default values required by the Django model
+      description: `New goal: ${title}`,
+      start_date: new Date().toISOString().split('T')[0], // YYYY-MM-DD format
+      target_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 30 days from now
+      status: 'NOT_STARTED',
+      current_value: 0, // This is a new field we assume the backend model now supports
     };
 
-    onAddGoal(newGoal);
-    onClose();
+    setIsLoading(true);
+    setError('');
+    try {
+      await onAddGoal(newGoalData);
+      onClose();
+    } catch (err) {
+      setError(`Failed to create goal: ${err.message}`);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -164,15 +230,16 @@ const NewGoalForm = ({ onAddGoal, onClose }) => {
       <form onSubmit={handleSubmit} className="space-y-4">
         {error && <p className="text-red-500 text-sm">{error}</p>}
         <div>
-          <label htmlFor="name" className="block text-sm font-medium text-gray-700">Goal Name</label>
+          <label htmlFor="title" className="block text-sm font-medium text-gray-700">Goal Title</label>
           <input
-            id="name"
+            id="title"
             type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
             placeholder="e.g., Run 10K distance"
             className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
             required
+            disabled={isLoading}
           />
         </div>
         <div className="grid grid-cols-2 gap-4">
@@ -187,6 +254,7 @@ const NewGoalForm = ({ onAddGoal, onClose }) => {
               min="1"
               className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
               required
+              disabled={isLoading}
             />
           </div>
           <div>
@@ -199,6 +267,7 @@ const NewGoalForm = ({ onAddGoal, onClose }) => {
               placeholder="e.g., Km, Books, Hours"
               className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
               required
+              disabled={isLoading}
             />
           </div>
         </div>
@@ -209,6 +278,7 @@ const NewGoalForm = ({ onAddGoal, onClose }) => {
             value={type}
             onChange={(e) => setType(e.target.value)}
             className="mt-1 block w-full px-3 py-2 border border-gray-300 bg-white rounded-lg shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+            disabled={isLoading}
           >
             <option>Fitness</option>
             <option>Learning</option>
@@ -223,14 +293,17 @@ const NewGoalForm = ({ onAddGoal, onClose }) => {
             type="button"
             onClick={onClose}
             className="px-4 py-2 text-sm font-semibold text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+            disabled={isLoading}
           >
             Cancel
           </button>
           <button
             type="submit"
-            className="px-4 py-2 text-sm font-semibold text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 transition-colors shadow-md"
+            className="px-4 py-2 text-sm font-semibold text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 transition-colors shadow-md flex items-center"
+            disabled={isLoading}
           >
-            Add Goal
+            {isLoading && <Loader className="w-4 h-4 animate-spin mr-2" />}
+            {isLoading ? 'Adding...' : 'Add Goal'}
           </button>
         </div>
       </form>
@@ -238,21 +311,46 @@ const NewGoalForm = ({ onAddGoal, onClose }) => {
   );
 };
 
-/**
- * Main Application Component
- */
+
+// --- Main Application Component ---
+
 const App = () => {
-  const [goals, setGoals] = useState(initialGoals);
+  const [goals, setGoals] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
   const [isFormVisible, setIsFormVisible] = useState(false);
+  const [error, setError] = useState(null);
+  const [isUpdating, setIsUpdating] = useState(null); // Tracks the ID of the goal currently being updated
+
+  const fetchGoals = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const data = await goalApi.fetchGoals();
+      setGoals(data || []); // API response is expected to be an array of goals
+    } catch (err) {
+      setError(`Failed to fetch goals: ${err.message}`);
+      setGoals([]);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Initial data fetch
+    fetchGoals();
+  }, [fetchGoals]);
+
 
   // --- Statistics ---
   const stats = useMemo(() => {
     const totalGoals = goals.length;
-    const completedGoals = goals.filter(g => g.status === 'completed').length;
-    const stuckGoals = goals.filter(g => g.status === 'stuck').length;
+    const completedGoals = goals.filter(g => g.status === 'COMPLETED').length;
+    const stuckGoals = goals.filter(g => g.status === 'STUCK').length;
 
     const overallProgress = goals.reduce((acc, goal) => {
-      const percentage = Math.min(100, (goal.current / goal.target) * 100);
+      const current = goal.current_value || 0;
+      const target = goal.target_value || 1;
+      const percentage = Math.min(100, (current / target) * 100);
       return acc + percentage;
     }, 0) / (totalGoals || 1);
 
@@ -266,20 +364,59 @@ const App = () => {
 
 
   // --- Handlers ---
-  const handleAddGoal = (newGoal) => {
-    setGoals(prevGoals => [newGoal, ...prevGoals]);
+  const handleAddGoal = async (newGoalData) => {
+    try {
+      const createdGoal = await goalApi.createGoal(newGoalData);
+      setGoals(prevGoals => [createdGoal, ...prevGoals]);
+      return createdGoal;
+    } catch (err) {
+      setError(`Failed to add goal: ${err.message}`);
+      throw err;
+    }
   };
 
-  const handleUpdateProgress = (id, newCurrent, newStatus) => {
-    setGoals(prevGoals =>
-      prevGoals.map(goal =>
-        goal.id === id ? { ...goal, current: newCurrent, status: newStatus } : goal
-      )
-    );
+  const handleUpdateProgress = async (id, newCurrent, newStatus) => {
+    setIsUpdating(id);
+    setError(null);
+    try {
+      const updateData = {
+        current_value: newCurrent,
+        status: newStatus,
+        // The PUT endpoint usually requires all required fields, we send back the rest of the existing goal data
+        // For a PATCH endpoint, we would only send current_value and status. We assume PUT is required here.
+        ...goals.find(g => g.id === id)
+      };
+      
+      const updatedGoal = await goalApi.updateGoal(id, updateData);
+      
+      // Update local state with the confirmed data from the server
+      setGoals(prevGoals =>
+        prevGoals.map(goal =>
+          goal.id === id ? updatedGoal : goal
+        )
+      );
+    } catch (err) {
+      setError(`Failed to update progress for goal ${id}: ${err.message}`);
+      // Re-fetch to revert local changes if API fails
+      fetchGoals();
+    } finally {
+      setIsUpdating(null);
+    }
   };
 
-  const handleDeleteGoal = (id) => {
-    setGoals(prevGoals => prevGoals.filter(goal => goal.id !== id));
+  const handleDeleteGoal = async (id) => {
+    if (window.confirm("Are you sure you want to delete this goal?")) {
+        setIsUpdating(id);
+        setError(null);
+        try {
+            await goalApi.deleteGoal(id);
+            setGoals(prevGoals => prevGoals.filter(goal => goal.id !== id));
+        } catch (err) {
+            setError(`Failed to delete goal: ${err.message}`);
+        } finally {
+            setIsUpdating(null);
+        }
+    }
   }
 
   // Helper for rendering stat cards
@@ -329,6 +466,13 @@ const App = () => {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {error && (
+            <div className="mb-6 p-4 bg-red-100 border border-red-300 text-red-700 rounded-xl font-medium flex items-center">
+                <XCircle className="w-5 h-5 mr-2" />
+                {error}
+            </div>
+        )}
+        
         {/* Statistics Section */}
         <section className="mb-10">
           <h2 className="text-2xl font-bold text-gray-800 mb-4">Dashboard Overview</h2>
@@ -363,7 +507,12 @@ const App = () => {
         {/* Goals List Section */}
         <section>
           <h2 className="text-2xl font-bold text-gray-800 mb-6">My Current Goals ({stats.totalGoals})</h2>
-          {goals.length === 0 ? (
+          {isLoading && goals.length === 0 ? (
+            <div className="flex items-center justify-center p-12 bg-white rounded-xl shadow-inner">
+                <Loader className="w-6 h-6 animate-spin text-indigo-600 mr-3" />
+                <span className="text-lg text-gray-600">Loading goals from API...</span>
+            </div>
+          ) : goals.length === 0 ? (
             <div className="text-center p-12 bg-white rounded-xl shadow-inner border border-dashed border-gray-300">
               <p className="text-gray-500 text-lg">You have no active goals. Click "Add New Goal" to start tracking!</p>
             </div>
@@ -375,6 +524,7 @@ const App = () => {
                   goal={goal}
                   onUpdateProgress={handleUpdateProgress}
                   onDelete={handleDeleteGoal}
+                  isUpdating={isUpdating}
                 />
               ))}
             </div>
