@@ -1,33 +1,36 @@
-from rest_framework import viewsets, permissions, filters
-from django_filters.rest_framework import DjangoFilterBackend
-
-from apps.goals.models import Goal
-from apps.goals.serializers import GoalSerializer
-from apps.core.permissions import IsOwner # Reusing the custom permission class
+from rest_framework import viewsets, permissions
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from .models import Goal
+from .serializers import GoalSerializer
 
 class GoalViewSet(viewsets.ModelViewSet):
     """
-    API endpoints for managing user fitness goals (CRUD operations).
+    A ViewSet for viewing and editing Goal instances.
+    Requires authentication to list, retrieve, create, update, or destroy goals.
+    Goals are automatically filtered by the authenticated user.
     """
     serializer_class = GoalSerializer
-    permission_classes = [permissions.IsAuthenticated, IsOwner]
-    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
-    
-    # Allows filtering goals by status or type
-    filterset_fields = ['status', 'goal_type']
-    
-    # Allows ordering results by date fields
-    ordering_fields = ['start_date', 'target_date', 'created_at']
-    ordering = ['-created_at'] # Default: show newest goals first
+    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        """ Filters the queryset to only return goals owned by the current user. """
-        if self.request.user.is_authenticated:
-            return Goal.objects.filter(user=self.request.user)
-        return Goal.objects.none()
+        """
+        Restricts the queryset to only goals belonging to the current user.
+        """
+        return Goal.objects.filter(user=self.request.user).order_by('-target_date', 'status')
 
     def perform_create(self, serializer):
-        """ Sets the user field to the current authenticated user upon creation. """
+        """
+        Injects the authenticated user into the Goal object before saving.
+        """
         serializer.save(user=self.request.user)
-        
-    # No custom actions are required here yet, but could be added for goal progress tracking.
+
+    # Example of a custom action: Mark goal as completed
+    @action(detail=True, methods=['post'])
+    def complete(self, request, pk=None):
+        """Marks a goal as COMPLETED and sets current_value to target_value."""
+        goal = self.get_object()
+        goal.status = 'COMPLETED'
+        goal.current_value = goal.target_value # Ensure 100% completion
+        goal.save()
+        return Response({'status': 'goal marked as completed', 'current_value': goal.current_value})
