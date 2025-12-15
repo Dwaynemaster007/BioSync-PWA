@@ -1,108 +1,64 @@
-from rest_framework import viewsets, permissions, status
-from rest_framework.decorators import action
-from rest_framework.response import Response
-from django.shortcuts import get_object_or_404
-from django.utils import timezone
+from rest_framework import viewsets, permissions
+from .models import ProgressEntry
+from .serializers import ProgressEntrySerializer
+from rest_framework.exceptions import ValidationError
+from django.db.models import Q
 
-from .models import Course, Lesson, ProgressRecord
-from .serializers import CourseSerializer, LessonSerializer, ProgressRecordSerializer
-
-class CourseViewSet(viewsets.ReadOnlyModelViewSet):
+class ProgressEntryViewSet(viewsets.ModelViewSet):
     """
-    A read-only ViewSet for listing and retrieving courses.
-    Courses are public information.
+    API endpoint for detailed Progress Entries.
+    Allows listing, creating, retrieving, updating, and destroying progress records.
     """
-    queryset = Course.objects.filter(is_active=True).prefetch_related('lessons')
-    serializer_class = CourseSerializer
+    serializer_class = ProgressEntrySerializer
     permission_classes = [permissions.IsAuthenticated]
-
-
-class LessonViewSet(viewsets.ReadOnlyModelViewSet):
-    """
-    A read-only ViewSet for listing and retrieving lessons.
-    Lessons belong to a course and are generally public.
-    """
-    queryset = Lesson.objects.filter(is_active=True).select_related('course')
-    serializer_class = LessonSerializer
-    permission_classes = [permissions.IsAuthenticated]
-
-
-class ProgressRecordViewSet(viewsets.ModelViewSet):
-    """
-    ViewSet for managing user-specific progress records.
-
-    - The user must be authenticated.
-    - Listings are filtered to only show the current user's records.
-    - On creation/update, the 'user' field is automatically set to the requesting user.
-    """
-    serializer_class = ProgressRecordSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    
-    # Exclude creation, update, and deletion of all records (only use the /track action)
-    http_method_names = ['get', 'head', 'options', 'post']
 
     def get_queryset(self):
         """
-        Filters the queryset to only include progress records belonging to the current user.
+        Ensures users only see their own progress entries.
+        Optionally allows filtering by 'goal_id' in the URL query.
         """
-        return ProgressRecord.objects.filter(user=self.request.user).select_related('lesson')
+        queryset = ProgressEntry.objects.filter(user=self.request.user)
+        
+        goal_id = self.request.query_params.get('goal_id')
+        if goal_id is not None:
+            # Filter entries specifically for a given goal
+            queryset = queryset.filter(goal__id=goal_id)
+            
+        return queryset.select_related('goal').order_by('-date')
 
     def perform_create(self, serializer):
-        """
-        Enforces the user to be the authenticated user when creating a new record.
-        This is overridden by the @action below, but kept for safety.
-        """
+        # Automatically set the user before saving
         serializer.save(user=self.request.user)
-
-    @action(detail=False, methods=['post'], url_path='track')
-    def track_progress(self, request):
-        """
-        Custom action to track or update progress for a specific lesson.
-
-        Expected body fields:
-        {
-            "lesson": <lesson_id: int>,
-            "status": <status: str> (e.g., 'IN_PROGRESS', 'COMPLETED')
-        }
-        """
-        lesson_id = request.data.get('lesson')
-        status_value = request.data.get('status')
-        user = request.user
-
-        if not lesson_id or not status_value:
-            return Response(
-                {"detail": "Both 'lesson' ID and 'status' are required."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        try:
-            lesson = Lesson.objects.get(pk=lesson_id)
-        except Lesson.DoesNotExist:
-            return Response(
-                {"detail": "Lesson not found."},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        # 1. Check if a record already exists for this user and lesson
-        try:
-            progress_record = ProgressRecord.objects.get(user=user, lesson=lesson)
-            is_new = False
-        except ProgressRecord.DoesNotExist:
-            progress_record = ProgressRecord(user=user, lesson=lesson, status='NOT_STARTED')
-            is_new = True
-
-        # 2. Update status and timestamps
-        current_time = timezone.now()
-        progress_record.status = status_value
-        progress_record.last_viewed_at = current_time
-
-        if status_value == ProgressRecord.COMPLETED and progress_record.completed_at is None:
-            # Only set completed_at once, upon the first transition to 'COMPLETED'
-            progress_record.completed_at = current_time
         
-        # 3. Save the record
-        progress_record.save()
+        # Note: The logic to update the Goal's current_value is now handled in the Serializer's create method.
+
+    def perform_destroy(self, instance):
+        """
+        Custom delete logic to rollback the progress on the associated Goal.
+        """
+        goal = instance.goal
         
-        # 4. Serialize the result and return
-        serializer = self.get_serializer(progress_record)
-        return Response(serializer.data, status=status.HTTP_200_OK if not is_new else status.HTTP_201_CREATED)
+        # Rollback the current_value
+        goal.current_value -= instance.value
+        if goal.current_value < 0:
+            goal.current_value = 0 # Prevent negative progress
+            
+        # Recalculate status based on new value
+        if goal.current_value == 0:
+            goal.status = 'NOT_STARTED'
+        elif goal.current_value < goal.target_value:
+            goal.status = 'IN_PROGRESS'
+        # If it was previously 'COMPLETED' and is now below the target, set back to 'IN_PROGRESS'
+        elif goal.current_value < goal.target_value and goal.status == 'COMPLETED':
+            goal.status = 'IN_PROGRESS'
+
+        goal.save(update_fields=['current_value', 'status', 'updated_at'])
+        
+        instance.delete()
+        
+    def perform_update(self, serializer):
+        """
+        Disallow simple updates (PUT/PATCH) for now to prevent complex calculation errors.
+        The user should delete the entry and create a new one to ensure goal history remains linear.
+        """
+        raise ValidationError("Directly updating progress entries is not allowed. Please delete the entry and log a new one for accurate history.")
