@@ -4,11 +4,15 @@ from pathlib import Path
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = 'django-insecure-example-key' # Replace with a real secret key in a real project
+from dotenv import load_dotenv
 
-DEBUG = True
+load_dotenv(BASE_DIR / '.env')
 
-ALLOWED_HOSTS = []
+SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-dev-only-change-me')
+
+DEBUG = os.getenv('DEBUG', 'True').lower() == 'true'
+
+ALLOWED_HOSTS = [h.strip() for h in os.getenv('ALLOWED_HOSTS', '127.0.0.1,localhost').split(',') if h.strip()]
 
 # Application definition
 INSTALLED_APPS = [
@@ -23,12 +27,13 @@ INSTALLED_APPS = [
     # Third-party apps
     'rest_framework',
     'corsheaders',
-    'rest_framework.authtoken', # <-- NEW: Enable Token Authentication
+    'rest_framework.authtoken',
 
     # Project apps
     'apps.users',
     'apps.goals',
     'apps.progress',
+    'apps.activities',
 ]
 
 MIDDLEWARE = [
@@ -63,12 +68,25 @@ TEMPLATES = [
 WSGI_APPLICATION = 'biosync.wsgi.application'
 
 # Database
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+# PostgreSQL when DB_NAME is set in .env, otherwise a local SQLite file
+if os.getenv('DB_NAME'):
+    DATABASES = {
+        'default': {
+            'ENGINE': os.getenv('DB_ENGINE', 'django.db.backends.postgresql'),
+            'NAME': os.getenv('DB_NAME'),
+            'USER': os.getenv('DB_USER', ''),
+            'PASSWORD': os.getenv('DB_PASSWORD', ''),
+            'HOST': os.getenv('DB_HOST', 'localhost'),
+            'PORT': os.getenv('DB_PORT', '5432'),
+        }
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
 
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
@@ -96,7 +114,7 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticated', # Default to requiring authentication
     ),
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework.authentication.TokenAuthentication', # <-- NEW: Set Token Auth as default
+        'rest_framework.authentication.TokenAuthentication',
         'rest_framework.authentication.SessionAuthentication', 
     ),
     'DEFAULT_PARSER_CLASSES': (
@@ -108,11 +126,11 @@ REST_FRAMEWORK = {
 }
 
 # CORS Configuration (Required for React frontend to talk to Django backend)
-CORS_ORIGIN_WHITELIST = (
-    'http://localhost:3000', # Assuming React runs here
-    'http://127.0.0.1:3000',
-    # Add any other frontend origins here
-)
+CORS_ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.getenv('CORS_ALLOWED_ORIGINS', 'http://localhost:3000,http://127.0.0.1:3000').split(',')
+    if o.strip()
+]
 CORS_ALLOW_CREDENTIALS = True
 
 

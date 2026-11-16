@@ -1,5 +1,7 @@
+from decimal import Decimal
+
 from django.db import models
-from apps.users.models import CustomUser
+from django.conf import settings
 
 class Goal(models.Model):
     # Status Choices, matching the frontend logic (uppercase for Django constants)
@@ -22,7 +24,7 @@ class Goal(models.Model):
 
     # Basic Identification
     id = models.AutoField(primary_key=True)
-    user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='goals')
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='goals')
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True, null=True)
 
@@ -32,11 +34,11 @@ class Goal(models.Model):
     
     # Target Metrics
     # Max digits 12, decimal places 2 for flexibility (e.g., currency, precise measurements)
-    target_value = models.DecimalField(max_digits=12, decimal_places=2, default=1.00)
+    target_value = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('1.00'))
     target_unit = models.CharField(max_length=50) # e.g., 'km', 'books', 'USD', 'hours'
     
     # New: Current Progress Value (This is what the frontend updates)
-    current_value = models.DecimalField(max_digits=12, decimal_places=2, default=0.00) 
+    current_value = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
 
     # Status and Type
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='NOT_STARTED')
@@ -59,6 +61,8 @@ class Goal(models.Model):
     # Custom property for progress percentage (read-only in API)
     @property
     def progress_percentage(self):
-        if self.target_value <= 0:
+        target = Decimal(str(self.target_value))
+        if target <= 0:
             return 0
-        return min(100, (self.current_value / self.target_value) * 100)
+        current = Decimal(str(self.current_value))
+        return float(round(min(Decimal(100), current / target * 100), 2))

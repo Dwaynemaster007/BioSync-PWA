@@ -10,7 +10,7 @@ FITNESS_LEVELS = [
     ('elite', 'Elite'),
 ]
 
-class User(AbstractUser):
+class CustomUser(AbstractUser):
     """
     Extends Django's default AbstractUser model to include fitness-specific profile fields.
     Uses email as the unique identifier for login.

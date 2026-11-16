@@ -11,10 +11,11 @@ urlpatterns = [
     # 3. # API Version 1 Routes
     path('api/v1/', include([
         # User Authentication and Profile Management
-        path('users/', include('apps.users.urls')), # <-- NEW: User auth URLs
+        path('users/', include('apps.users.urls')),
 
         # Goals and Progress
         path('goals/', include('apps.goals.urls')),
-        path('progress/', include('apps.progress.urls')), # Uncomment when Progress app is ready
+        path('progress/', include('apps.progress.urls')),
+        path('activities/', include('apps.activities.urls')),
     ])),
 ]

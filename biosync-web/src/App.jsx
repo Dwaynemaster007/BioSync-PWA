@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { Plus, CheckCircle, Target, Loader, TrendingUp, XCircle, Trash2, Zap, User, LogOut } from 'lucide-react';
 
 // --- Configuration and API Utility ---
-const API_BASE_URL = 'http://localhost:8000/api/v1'; 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 
 /**
  * Utility for API interaction (fetch wrapper with authentication handling)
