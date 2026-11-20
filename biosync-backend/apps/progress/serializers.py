@@ -15,6 +15,13 @@ class ProgressEntrySerializer(serializers.ModelSerializer):
         )
         read_only_fields = ('id', 'user', 'created_at', 'updated_at', 'goal_title')
 
+    def validate_goal(self, goal):
+        # Users may only log progress against their own goals
+        request = self.context.get('request')
+        if request and goal.user_id != request.user.id:
+            raise serializers.ValidationError('Goal not found.')
+        return goal
+
     def create(self, validated_data):
         # Use a transaction to ensure both the entry creation and goal update succeed or fail together.
         with transaction.atomic():
